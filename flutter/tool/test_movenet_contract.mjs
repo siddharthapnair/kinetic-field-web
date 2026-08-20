@@ -57,8 +57,8 @@ for (const id of [
 }
 
 assert.ok(dartAdapter.includes("kind: KineticInputKind.pose"));
-assert.ok(dartAdapter.includes("capturedAt: _milliseconds(frame.capturedAtMs)"));
-assert.ok(dartAdapter.includes("receivedAt: _milliseconds(frame.completedAtMs)"));
+assert.ok(dartAdapter.includes("capturedAt: _milliseconds(capturedAtMs)"));
+assert.ok(dartAdapter.includes("receivedAt: _milliseconds(completedAtMs)"));
 
 for (const field of [
   "version: 1",

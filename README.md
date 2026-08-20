@@ -2,6 +2,10 @@
 
 A webcam-driven generative particle installation for the browser. Movement becomes force, turbulence and colour in a live WebGL field inspired by interactive projection art.
 
+The Flutter test build is live at
+<https://cortexz-kinetic-field.web.app>. It uses a locally bundled MoveNet
+SinglePose Lightning model and does not send camera frames off the device.
+
 ## What it does
 
 - Reads motion from a normal laptop webcam
@@ -28,6 +32,30 @@ npm run dev
 
 Open the local address printed in the terminal. Webcam access works on `localhost` and `127.0.0.1` without HTTPS.
 
+## Flutter implementation
+
+The repository now also contains a reusable Flutter package, a native
+add-to-app module and the deployed Flutter web host:
+
+- `flutter/packages/kinetic_field`: platform-neutral field and controller
+- `flutter/modules/kinetic_field_module`: Android/iOS add-to-app entry point
+- `flutter/apps/kinetic_field_web`: responsive web experience and camera flow
+- `flutter/tool`: checksum-pinned local MoveNet and TensorFlow.js vendoring
+
+Build and verify the web version with:
+
+```bash
+cd flutter/apps/kinetic_field_web
+flutter pub get
+flutter analyze
+flutter test
+flutter build web --release --no-web-resources-cdn --csp
+```
+
+Flutter receives only normalised pose position, velocity, energy and confidence
+values. TensorFlow.js, the model weights, Flutter rendering assets and interface
+fonts are all served from the same origin.
+
 ## Verification
 
 ```bash
@@ -51,11 +79,18 @@ Pointer and touch input remain available in every camera state.
 
 ## Firebase Hosting
 
-The recommended production topology is a dedicated Firebase Hosting site
-connected to its own subdomain, for example `kinetic.yourdomain.com`. The site
-may live in a new Firebase project or alongside other Hosting sites in an
-existing project. In either case, the repository deliberately uses the named
-Hosting target `kinetic-field`, so deployment remains explicit.
+The Flutter build is deployed to the separate Hosting site
+`cortexz-kinetic-field`, bound only to the named target
+`kinetic-field-flutter`. The existing default `cortexz` site is not touched.
+Deploy the verified Flutter build explicitly with:
+
+```bash
+firebase deploy --config firebase.flutter.json \
+  --only hosting:kinetic-field-flutter --project cortexz
+```
+
+The React build retains its independent `kinetic-field` target in
+`firebase.json`; it is not bound or deployed by the Flutter command.
 
 For a fully isolated project:
 
@@ -98,10 +133,11 @@ the dedicated Hosting site and target have been chosen.
 
 ## Architecture
 
-- React handles consent, camera states and operator controls.
-- Three.js owns one WebGL point field and a custom shader.
-- A low-resolution motion analyser measures position, velocity and energy from consecutive frames.
-- The shader converts that interaction into local vortex, drag, wave depth and reactive colour.
+- The original React version uses Three.js and a custom WebGL shader.
+- The Flutter version uses a reusable `CustomPainter` field and a controller
+  that accepts camera, pointer, sensor or native motion samples.
+- The web host runs MoveNet locally and passes only reduced motion values into
+  Dart. The native module exposes the same values through a platform channel.
 - No backend, account, database or external inference service is required.
 
 ## Browser support

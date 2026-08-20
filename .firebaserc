@@ -1,0 +1,13 @@
+{
+  "projects": {},
+  "targets": {
+    "cortexz": {
+      "hosting": {
+        "kinetic-field-flutter": [
+          "cortexz-kinetic-field"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}

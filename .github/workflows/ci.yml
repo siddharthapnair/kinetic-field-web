@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  verify:
+  react:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -36,3 +36,77 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  flutter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: 3.44.9
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: flutter/tool/package-lock.json
+
+      - name: Resolve MoveNet tooling
+        working-directory: flutter/tool
+        run: npm ci
+
+      - name: Verify local MoveNet assets
+        working-directory: flutter/tool
+        run: |
+          node --check movenet_bridge_entry.js
+          npm run vendor:movenet
+          npm test
+          npm audit
+          git diff --exit-code -- ../apps/kinetic_field_web/web/movenet
+
+      - name: Resolve field package
+        working-directory: flutter/packages/kinetic_field
+        run: flutter pub get
+
+      - name: Analyse field package
+        working-directory: flutter/packages/kinetic_field
+        run: flutter analyze
+
+      - name: Test field package
+        working-directory: flutter/packages/kinetic_field
+        run: flutter test
+
+      - name: Resolve native module
+        working-directory: flutter/modules/kinetic_field_module
+        run: flutter pub get
+
+      - name: Analyse native module
+        working-directory: flutter/modules/kinetic_field_module
+        run: flutter analyze
+
+      - name: Test native module
+        working-directory: flutter/modules/kinetic_field_module
+        run: flutter test
+
+      - name: Resolve web host
+        working-directory: flutter/apps/kinetic_field_web
+        run: flutter pub get
+
+      - name: Analyse web host
+        working-directory: flutter/apps/kinetic_field_web
+        run: flutter analyze
+
+      - name: Test web host
+        working-directory: flutter/apps/kinetic_field_web
+        run: flutter test
+
+      - name: Build self-hosted Flutter web app
+        working-directory: flutter/apps/kinetic_field_web
+        run: flutter build web --release --no-web-resources-cdn --csp

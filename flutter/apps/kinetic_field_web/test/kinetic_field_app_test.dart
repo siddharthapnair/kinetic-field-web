@@ -7,18 +7,19 @@ import 'package:kinetic_field/kinetic_field.dart';
 import 'package:kinetic_field_web/fullscreen_controller.dart';
 import 'package:kinetic_field_web/kinetic_field_app.dart';
 import 'package:kinetic_field_web/pose_source.dart';
+import 'package:kinetic_field_web/soundscape_controller.dart';
 
 class _FakePoseSource implements PoseSource {
   _FakePoseSource({this.startFailure});
 
   final PoseSourceException? startFailure;
-  final StreamController<PoseObservation> controller =
-      StreamController<PoseObservation>.broadcast();
+  final StreamController<KineticInputFrame> controller =
+      StreamController<KineticInputFrame>.broadcast();
   var starts = 0;
   var stops = 0;
 
   @override
-  Stream<PoseObservation> get observations => controller.stream;
+  Stream<KineticInputFrame> get observations => controller.stream;
 
   @override
   Future<void> start() async {
@@ -59,39 +60,131 @@ class _FakeFullscreenController implements FullscreenController {
   }
 }
 
+class _FakeSoundscapeController implements SoundscapeController {
+  final List<String> scenes = <String>[];
+  var _enabled = false;
+  var _volume = defaultSoundscapeVolume;
+  var disposed = false;
+
+  @override
+  bool get isSupported => true;
+
+  @override
+  bool get isEnabled => _enabled;
+
+  @override
+  double get volume => _volume;
+
+  @override
+  Future<bool> enable() async => _enabled = true;
+
+  @override
+  Future<bool> disable() async {
+    _enabled = false;
+    return true;
+  }
+
+  @override
+  void setVolume(double value) => _volume = value.clamp(0, 1);
+
+  @override
+  void update({
+    required String sceneId,
+    required double energy,
+    required int handCount,
+    double? leftX,
+    double? leftY,
+    double? rightX,
+    double? rightY,
+    bool calm = false,
+  }) {
+    scenes.add(sceneId);
+  }
+
+  @override
+  Future<void> dispose() async => disposed = true;
+}
+
 void main() {
   testWidgets('starts camera and forwards mirrored pose samples', (
     tester,
   ) async {
     final source = _FakePoseSource();
     final controller = KineticFieldController();
+    addTearDown(controller.dispose);
 
     await tester.pumpWidget(
       KineticFieldApp(poseSourceFactory: () => source, controller: controller),
     );
-    expect(find.text('Shape motion\ninto light.'), findsOneWidget);
+    expect(find.text('Your hands\nmake worlds move.'), findsOneWidget);
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Enable camera'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Play with camera'));
     await tester.pump();
     await tester.pump();
     expect(source.starts, 1);
-    expect(find.text('CAMERA POSE ACTIVE'), findsOneWidget);
+    expect(find.text('TWO-HAND CAMERA ACTIVE'), findsOneWidget);
 
     source.controller.add(
-      const PoseObservation(
-        x: 0.25,
-        y: 0.4,
-        vx: 0.08,
-        vy: -0.03,
-        energy: 0.75,
-        confidence: 0.9,
-        timestamp: Duration(milliseconds: 20),
+      const KineticInputFrame(
+        sequence: 1,
+        capturedAt: Duration(milliseconds: 20),
+        receivedAt: Duration(milliseconds: 24),
+        kind: KineticInputKind.pose,
+        landmarks: <KineticLandmarkObservation>[
+          KineticLandmarkObservation(
+            id: KineticLandmarkId.leftWrist,
+            x: 0.25,
+            y: 0.4,
+            confidence: 0.9,
+          ),
+          KineticLandmarkObservation(
+            id: KineticLandmarkId.rightWrist,
+            x: 0.72,
+            y: 0.52,
+            confidence: 0.88,
+          ),
+        ],
       ),
     );
     await tester.pump();
-    expect(controller.motion.x, closeTo(0.75, 0.0001));
-    expect(controller.motion.vx, closeTo(-0.08, 0.0001));
-    expect(controller.motion.confidence, 0.9);
+    expect(controller.motionState.visibleEffectorCount, 2);
+    expect(controller.motionState.left.x, closeTo(0.75, 0.0001));
+    expect(controller.motionState.right.x, closeTo(0.28, 0.0001));
+
+    await tester.tap(find.byTooltip('Field controls'));
+    await tester.pump();
+    final mirrorTile = tester.widget<SwitchListTile>(
+      find.widgetWithText(SwitchListTile, 'Mirror camera'),
+    );
+    mirrorTile.onChanged!(false);
+    await tester.pump();
+    expect(controller.motionState.visibleEffectorCount, 0);
+
+    source.controller.add(
+      const KineticInputFrame(
+        sequence: 2,
+        capturedAt: Duration(milliseconds: 40),
+        receivedAt: Duration(milliseconds: 44),
+        kind: KineticInputKind.pose,
+        landmarks: <KineticLandmarkObservation>[
+          KineticLandmarkObservation(
+            id: KineticLandmarkId.leftWrist,
+            x: 0.25,
+            y: 0.4,
+            confidence: 0.9,
+          ),
+          KineticLandmarkObservation(
+            id: KineticLandmarkId.rightWrist,
+            x: 0.72,
+            y: 0.52,
+            confidence: 0.88,
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+    expect(controller.motionState.left.x, closeTo(0.25, 0.0001));
+    expect(controller.motionState.left.speed, 0);
   });
 
   testWidgets('camera failure retains pointer mode and recovery copy', (
@@ -105,14 +198,62 @@ void main() {
     );
     await tester.pumpWidget(KineticFieldApp(poseSourceFactory: () => source));
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Enable camera'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Play with camera'));
     await tester.pump();
     await tester.pump();
     expect(
       find.text('Camera access was declined. Pointer mode remains active.'),
       findsWidgets,
     );
-    expect(find.text('Continue with pointer'), findsOneWidget);
+    expect(find.text('Play with pointer'), findsOneWidget);
+  });
+
+  testWidgets('world switching preserves camera and updates optional sound', (
+    tester,
+  ) async {
+    final source = _FakePoseSource();
+    final controller = KineticFieldController();
+    final sound = _FakeSoundscapeController();
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(
+      KineticFieldApp(
+        poseSourceFactory: () => source,
+        controller: controller,
+        soundscapeController: sound,
+      ),
+    );
+
+    await tester.tap(find.text('Fireflies'));
+    await tester.pump();
+    expect(controller.settings.scene, KineticScene.fireflies);
+    expect(find.text('Your hands\nmake worlds move.'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Turn sound on'));
+    await tester.pump();
+    controller.updatePointer(
+      x: 0.35,
+      y: 0.4,
+      timestamp: const Duration(milliseconds: 16),
+    );
+    expect(sound.scenes.last, 'fireflies');
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Play with camera'));
+    await tester.pump();
+    await tester.pump();
+    expect(source.starts, 1);
+
+    await tester.tap(find.byTooltip('Choose a play world'));
+    await tester.pump();
+    await tester.tap(find.text('Bloom').last);
+    await tester.pump();
+    expect(controller.settings.scene, KineticScene.bloom);
+    expect(source.starts, 1);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump();
+    expect(sound.isEnabled, isFalse);
+    expect(sound.disposed, isFalse);
   });
 
   testWidgets('runtime inference failure restores pointer input', (
@@ -124,7 +265,7 @@ void main() {
       KineticFieldApp(poseSourceFactory: () => source, controller: controller),
     );
 
-    await tester.tap(find.widgetWithText(FilledButton, 'Enable camera'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Play with camera'));
     await tester.pump();
     await tester.pump();
     expect(

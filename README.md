@@ -1,145 +1,125 @@
 # Kinetic Field
 
-A webcam-driven generative particle installation for the browser. Movement becomes force, turbulence and colour in a live WebGL field inspired by interactive projection art.
+Kinetic Field is a movement-driven Flutter play experience for children,
+adults and older participants. A normal laptop webcam detects both wrists with
+MoveNet, then turns position, speed, separation and stillness into layered
+particle depth, trails, flowers, swarms, constellations, koi and calm sound.
 
-The Flutter test build is live at
-<https://cortexz-kinetic-field.web.app>. It uses a locally bundled MoveNet
-SinglePose Lightning model and does not send camera frames off the device.
+The public test build is hosted in its own Firebase project:
 
-## What it does
+<https://kinetic-field-play.web.app>
 
-- Reads motion from a normal laptop webcam
-- Processes all camera frames locally in the browser
-- Renders up to 32,400 GPU-driven particles in one draw call
-- Works immediately with mouse, pen or touch when camera access is unavailable
-- Provides force, radius, swirl, turbulence, glow and colour controls
-- Includes automatic, low and high performance modes
-- Supports fullscreen projector use, reduced motion and keyboard control
-- Builds to a static `dist` directory ready for Firebase Hosting
+## Four play worlds
 
-## Privacy model
+- **Bloom**: move each hand through flowers, pollen and opening petals.
+- **Honeybees**: guide one or two gentle swarms around a meadow.
+- **Fireflies**: gather lights and hold still to build a constellation.
+- **Moon Pond**: guide luminous koi, create ripples and settle the water.
 
-Camera frames never leave the device. The app requests video only, with audio explicitly disabled. Frames are reduced to a small local motion map and are neither uploaded nor stored. Turning the camera off, closing the page or leaving the page stops the media tracks.
+The shared particle field has three procedural depth layers, perspective,
+bilateral vortices and reactive motion echoes. Each world adds its own renderer
+and interaction strategy, rather than changing only the colour palette.
 
-## Local development
+## Privacy and sound
 
-Requirements: Node.js 24 and npm.
+- Camera frames, TensorFlow.js and MoveNet inference stay in the browser.
+- Only six normalised pose landmarks cross into Flutter. No images are stored
+  or uploaded.
+- Video is requested without microphone access.
+- Hiding or leaving the page releases the camera and audio graph.
+- MoveNet, its model, interface fonts and Flutter rendering assets are served
+  from the same origin. No runtime CDN is required.
+- Sound is optional, off by default and procedurally generated. The app contains
+  no sampled or streamed music, so there is no third-party music licence.
 
-```bash
-npm install
-npm run dev
+## Architecture
+
+The Flutter code uses replaceable input, processing and output boundaries:
+
+```text
+MoveNet, pointer, touch or native host
+                 ↓
+          KineticInputFrame
+                 ↓
+       KineticMotionProcessor
+     filter, prediction, pair events
+            ↙              ↘
+   scene strategies      soundscape
+            ↓              ↓
+  CustomPainter output   Web Audio
 ```
 
-Open the local address printed in the terminal. Webcam access works on `localhost` and `127.0.0.1` without HTTPS.
+Important directories:
 
-## Flutter implementation
+- `flutter/packages/kinetic_field`: platform-neutral input models, motion
+  processor, scene strategies and Canvas output.
+- `flutter/apps/kinetic_field_web`: camera lifecycle, world selector,
+  soundscape adapter, responsive UI and Firebase web host.
+- `flutter/modules/kinetic_field_module`: Android/iOS add-to-app module and
+  versioned native method-channel input.
+- `flutter/tool`: checksum-pinned MoveNet vendoring and JavaScript contracts.
 
-The repository now also contains a reusable Flutter package, a native
-add-to-app module and the deployed Flutter web host:
+See `flutter/ARCHITECTURE.md` for extension points and data contracts.
 
-- `flutter/packages/kinetic_field`: platform-neutral field and controller
-- `flutter/modules/kinetic_field_module`: Android/iOS add-to-app entry point
-- `flutter/apps/kinetic_field_web`: responsive web experience and camera flow
-- `flutter/tool`: checksum-pinned local MoveNet and TensorFlow.js vendoring
-
-Build and verify the web version with:
+## Run the Flutter web app
 
 ```bash
 cd flutter/apps/kinetic_field_web
 flutter pub get
+flutter run -d chrome
+```
+
+Production verification:
+
+```bash
+cd flutter/packages/kinetic_field
+flutter analyze
+flutter test
+
+cd ../../apps/kinetic_field_web
 flutter analyze
 flutter test
 flutter build web --release --no-web-resources-cdn --csp
 ```
 
-Flutter receives only normalised pose position, velocity, energy and confidence
-values. TensorFlow.js, the model weights, Flutter rendering assets and interface
-fonts are all served from the same origin.
-
-## Verification
+Verify the locally pinned MoveNet and soundscape bridges:
 
 ```bash
-npm run lint
+cd flutter/tool
+npm ci
+npm run vendor:movenet
 npm test
-npm run build
+npm audit
 ```
 
-The production build also enforces network and parse-size budgets. It fails if
-the JavaScript exceeds 800 KiB raw or 220 KiB gzip in total, if one JavaScript
-chunk exceeds 550 KiB raw or 145 KiB gzip, or if CSS exceeds 20 KiB gzip.
+## Firebase release
+
+The dedicated Firebase project is `kinetic-field-play`; its Hosting target is
+`kinetic-field`. The previous Cortexz Hosting site remains separately mapped
+and is not touched by this release command.
+
+```bash
+cd flutter/apps/kinetic_field_web
+flutter build web --release --no-web-resources-cdn --csp
+
+cd ../../..
+firebase deploy --config firebase.kinetic-field.json \
+  --only hosting:kinetic-field --project kinetic-field-play
+```
+
+Firebase supplies HTTPS, which is required for webcam access outside localhost.
+The Hosting configuration disables microphone access and applies a same-origin
+Content Security Policy.
 
 ## Controls
 
-- `C`: enable or disable the camera
-- `F`: enter or exit fullscreen
-- `R`: restore field defaults
-- `Escape`: close open interface panels
+- `1` to `4`: choose Bloom, Honeybees, Fireflies or Moon Pond.
+- `C`: enable or disable the camera.
+- `F`: enter or leave fullscreen.
+- `R`: reset the current world.
+- `Escape`: close the open panel or leave presentation mode.
 
-Pointer and touch input remain available in every camera state.
-
-## Firebase Hosting
-
-The Flutter build is deployed to the separate Hosting site
-`cortexz-kinetic-field`, bound only to the named target
-`kinetic-field-flutter`. The existing default `cortexz` site is not touched.
-Deploy the verified Flutter build explicitly with:
-
-```bash
-firebase deploy --config firebase.flutter.json \
-  --only hosting:kinetic-field-flutter --project cortexz
-```
-
-The React build retains its independent `kinetic-field` target in
-`firebase.json`; it is not bound or deployed by the Flutter command.
-
-For a fully isolated project:
-
-1. Create a new Firebase project.
-2. Run `firebase use --add` and select it.
-3. Create or select a Hosting site.
-4. Bind that site to the target with `firebase target:apply hosting kinetic-field YOUR_HOSTING_SITE_ID`.
-5. Run `npm run build`.
-6. Deploy with `firebase deploy --only hosting:kinetic-field`.
-
-For a second site inside an existing Firebase project, create the secondary site first and bind only that site to `kinetic-field`. Do not deploy this repository to an existing default Hosting site.
-
-Firebase supplies HTTPS on its generated domains and connected custom domains,
-which is required for webcam access outside local development. The Hosting
-configuration also limits camera access to this origin, disables microphone
-access and applies a self-hosted Content Security Policy compatible with this
-app's webcam stream and WebGL renderer.
-
-### Existing-site path
-
-A URL path such as `yourdomain.com/kinetic-field/` is not a separate Firebase
-Hosting destination. DNS operates at the hostname level, not the path level. To
-use an existing path, integrate this build into that site's deployment, place
-the generated files beneath the chosen directory and add a rewrite scoped only
-to that directory. Do not use this repository's broad `**` rewrite unchanged,
-because it is designed to own a dedicated Hosting site. Vite emits relative
-asset URLs so the compiled app itself remains portable to such a directory.
-
-The security policy permits same-origin framing only. A cross-origin iframe
-deployment needs a deliberate `frame-ancestors` change, an iframe `allow`
-policy for the camera and a matching camera policy on the parent site.
-
-The source uses a relative social-image path so builds remain environment
-independent. Once a canonical public hostname is fixed, an absolute Open Graph
-image URL can improve compatibility with social crawlers.
-
-The checked-in GitHub Actions workflow verifies the app only. It contains no
-Firebase credentials and cannot deploy. Configure deployment separately after
-the dedicated Hosting site and target have been chosen.
-
-## Architecture
-
-- The original React version uses Three.js and a custom WebGL shader.
-- The Flutter version uses a reusable `CustomPainter` field and a controller
-  that accepts camera, pointer, sensor or native motion samples.
-- The web host runs MoveNet locally and passes only reduced motion values into
-  Dart. The native module exposes the same values through a platform channel.
-- No backend, account, database or external inference service is required.
-
-## Browser support
-
-Current Chrome, Edge and Safari are the primary targets. Browsers must support WebGL and `navigator.mediaDevices.getUserMedia`. If either capability is unavailable, the pointer experience still works.
+Camera interaction uses wrists, elbows and shoulders from MoveNet Lightning.
+MoveNet does not detect individual fingers and does not measure real depth.
+Depth in this experience is deliberately generated from movement, separation,
+energy and the scene physics.

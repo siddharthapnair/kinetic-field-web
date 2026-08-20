@@ -6,28 +6,105 @@ product
 
 ## Users
 
-People using a laptop or desktop browser who want to shape a live generative artwork with their movement. The primary context is individual web use, with a secondary projector or exhibition mode for larger displays.
+Kinetic Field is designed for children, adults and older people, including
+elders who may prefer slower, clearer interaction. It supports individual play
+on a laptop as well as shared use with a projector or large display. A parent,
+carer, educator or facilitator may help with camera consent and settings.
 
-## Product Purpose
+This is an inclusive play experience. It is not an assessment, therapeutic
+intervention or diagnostic tool, and no developmental or clinical outcome is
+claimed.
 
-Create a full-screen, motion-responsive particle field inspired by the supplied interactive installation. A normal webcam detects movement locally and converts it into visible force, colour and turbulence. Success means the relationship between movement and visual response is immediate, legible and satisfying without requiring instructions or specialist hardware.
+## Product purpose
 
-## Brand Personality
+Turn ordinary movement into immediate, legible feedback without specialist
+hardware. A normal laptop webcam can track both wrists independently, while a
+mouse, stylus or one or two touch points provide a complete fallback. The
+participant should understand the connection between movement and response
+before needing to read instructions.
 
-Immersive, responsive and precise. The experience should feel alive and slightly uncanny, but never chaotic or technically intimidating.
+## Four play worlds
+
+- **Bloom**: separate the hands to open flowers and release pollen.
+- **Honeybees**: guide one or two gentle swarms through a meadow.
+- **Fireflies**: gather lights, then become still to place a constellation.
+- **Moon Pond**: guide luminous koi, create ripples and settle the water.
+
+Each world has its own interaction strategy and renderer. They share the same
+processed motion state, but do more than change colour.
+
+## Interaction architecture
+
+```text
+webcam, pointer, touch or native host
+                  ↓
+       KineticInputFrame version 1
+       raw independent landmarks
+                  ↓
+        KineticMotionProcessor
+ One Euro filtering, prediction, pair events
+             ↙              ↘
+    visual scene output    optional sound
+```
+
+The camera bridge supplies separate wrist, elbow and shoulder observations for
+the left and right sides. It does not average the hands into one centroid,
+smooth them or infer velocity. The shared processor applies per-axis One Euro
+filtering, confidence hysteresis, short occlusion fade and prediction capped at
+50 milliseconds. It then derives position, velocity, energy, separation,
+rotation and open, gather, lift, settle and crossing events.
+
+Pointer input bypasses positional filtering and prediction for direct response.
+One mouse pointer is a complete interaction; two simultaneous touch or stylus
+points remain independent effectors.
+
+## Experience principles
+
+1. Movement is the interface. Feedback begins with the first usable hand or
+   pointer observation.
+2. Two hands should enrich the interaction, not become a requirement.
+3. Make causality visible. Position, speed, separation and stillness should
+   produce distinct responses.
+4. Preserve the canvas. World selection and controls stay clear, compact and
+   dismissible.
+5. Avoid failure states in play. A denied or unavailable camera falls back to
+   pointer input.
+6. Privacy and accessibility are architectural constraints, not optional
+   polish.
+
+## Privacy and sound
+
+Camera frames and MoveNet inference remain in the browser. Raw video does not
+cross into Flutter, and no image is stored or uploaded. Only normalised numeric
+landmarks cross the bridge. The app requests no microphone access. Hiding the
+page stops the camera and suspends sound; leaving it also cleans up the audio
+graph.
+
+The optional soundscape is off by default, begins only after an explicit user
+action and uses locally generated tones. It contains no samples, streaming
+music or runtime audio CDN. Visual play remains complete with sound disabled.
+
+## Accessibility and performance
+
+- Respect the operating system's reduced-motion preference and retain direct
+  hand or pointer response while reducing autonomous motion and intensity.
+- Offer a calm setting, keyboard shortcuts, readable status text and pointer or
+  touch alternatives to camera input.
+- Do not rely on colour alone for camera or control status.
+- Keep scene selection usable at compact laptop sizes and short landscape
+  heights.
+- Provide Low, Automatic and High quality modes. Automatic quality responds to
+  measured frame rate, reducing particle density after sustained slow windows
+  and restoring it only after sustained stable performance.
+
+## Brand personality
+
+Immersive, responsive and precise. The experience should feel alive, warm and
+slightly uncanny, but never chaotic or technically intimidating.
 
 ## Anti-references
 
-Do not make this look like an analytics dashboard, a generic neon AI product, a crypto interface, or a control-heavy creative tool. Avoid decorative glassmorphism, dense permanent panels, gratuitous copy and effects that do not respond to the participant.
-
-## Design Principles
-
-1. Movement is the interface. The artwork must respond before the participant needs to read.
-2. Make causality visible. Position, speed and motion energy should create distinct, comprehensible changes in force, colour and turbulence.
-3. Preserve the canvas. Controls stay quiet, compact and dismissible.
-4. Degrade gracefully. Webcam, pointer, touch and reduced-motion modes should all produce a complete experience.
-5. Privacy is architectural. Camera frames are processed in the browser and are never uploaded or stored.
-
-## Accessibility & Inclusion
-
-Respect reduced-motion preferences, retain keyboard access to all controls, provide pointer and touch alternatives to camera input, and never rely on colour alone for status. Explain camera use before requesting permission. Provide a low-power mode for devices that cannot sustain the full particle count.
+Do not make this look like an analytics dashboard, generic neon AI product,
+crypto interface or control-heavy creative tool. Avoid decorative
+glassmorphism, dense permanent panels, gratuitous copy and effects that do not
+respond to the participant.

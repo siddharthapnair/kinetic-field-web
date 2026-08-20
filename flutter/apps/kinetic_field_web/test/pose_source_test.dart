@@ -1,11 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:kinetic_field/kinetic_field.dart';
 import 'package:kinetic_field_web/pose_source.dart';
 
 void main() {
   test('bridge source starts and stops idempotently', () async {
-    late void Function(PoseObservation) emit;
+    late void Function(KineticInputFrame) emit;
     var starts = 0;
     var stops = 0;
     final source = BridgePoseSource((callback, _) async {
@@ -17,17 +18,23 @@ void main() {
     await source.start();
     expect(starts, 1);
 
-    final observation = PoseObservation(
-      x: 0.25,
-      y: 0.4,
-      vx: 0.1,
-      vy: -0.04,
-      energy: 0.7,
-      timestamp: const Duration(milliseconds: 16),
+    const frame = KineticInputFrame(
+      sequence: 1,
+      capturedAt: Duration(milliseconds: 14),
+      receivedAt: Duration(milliseconds: 16),
+      kind: KineticInputKind.pose,
+      landmarks: <KineticLandmarkObservation>[
+        KineticLandmarkObservation(
+          id: KineticLandmarkId.leftWrist,
+          x: 0.25,
+          y: 0.4,
+          confidence: 0.9,
+        ),
+      ],
     );
     final received = source.observations.first;
-    emit(observation);
-    expect(await received, same(observation));
+    emit(frame);
+    expect(await received, same(frame));
 
     await source.stop();
     await source.stop();

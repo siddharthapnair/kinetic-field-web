@@ -4,10 +4,8 @@ import * as tf from "@tensorflow/tfjs-core";
 
 const MODEL_PATH = "movenet/model/model.json";
 const MODEL_NAME = "MoveNet.SinglePose.Lightning.v4";
-const INFERENCE_INTERVAL_MS = 1000 / 24;
-const NOMINAL_FRAME_MS = 1000 / 60;
-const MIN_KEYPOINT_SCORE = 0.35;
-const MIN_KEYPOINTS = 4;
+const TARGET_FPS = 30;
+const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
 
 const keypointNames = [
   "nose",
@@ -29,25 +27,14 @@ const keypointNames = [
   "right_ankle",
 ];
 
-const bodyWeights = {
-  nose: 0.45,
-  left_eye: 0.2,
-  right_eye: 0.2,
-  left_ear: 0.25,
-  right_ear: 0.25,
-  left_shoulder: 1.15,
-  right_shoulder: 1.15,
-  left_elbow: 1.4,
-  right_elbow: 1.4,
-  left_wrist: 1.8,
-  right_wrist: 1.8,
-  left_hip: 1,
-  right_hip: 1,
-  left_knee: 0.8,
-  right_knee: 0.8,
-  left_ankle: 0.75,
-  right_ankle: 0.75,
-};
+const landmarkIds = Object.freeze({
+  left_wrist: "leftWrist",
+  right_wrist: "rightWrist",
+  left_elbow: "leftElbow",
+  right_elbow: "rightElbow",
+  left_shoulder: "leftShoulder",
+  right_shoulder: "rightShoulder",
+});
 
 const runtime = {
   state: "idle",
@@ -62,27 +49,16 @@ const runtime = {
   startPromise: null,
   stopPromise: null,
   loopPromise: null,
-  previousPoints: new Map(),
-  previousTimestamp: 0,
-  lastSample: {
-    x: 0.5,
-    y: 0.5,
-    vx: 0,
-    vy: 0,
-    energy: 0,
-    confidence: 0,
-    timestampMs: 0,
-  },
+  frameWaitCancel: null,
+  sequence: 0,
+  lastCaptureAt: 0,
+  lastFrameAt: 0,
 };
 
 tf.enableProdMode();
 
 function clamp(value, minimum = 0, maximum = 1) {
   return Math.min(maximum, Math.max(minimum, value));
-}
-
-function mix(current, target, amount) {
-  return current + (target - current) * amount;
 }
 
 function errorText(error) {
@@ -97,7 +73,7 @@ function statusSnapshot() {
     error: runtime.error,
     backend: runtime.backend,
     model: MODEL_NAME,
-    lastSampleAt: runtime.lastSample.timestampMs,
+    lastFrameAt: runtime.lastFrameAt,
   };
 }
 
@@ -111,18 +87,10 @@ function transition(state, error = null) {
   );
 }
 
-function resetTracking() {
-  runtime.previousPoints.clear();
-  runtime.previousTimestamp = 0;
-  runtime.lastSample = {
-    x: 0.5,
-    y: 0.5,
-    vx: 0,
-    vy: 0,
-    energy: 0,
-    confidence: 0,
-    timestampMs: 0,
-  };
+function resetFrameState() {
+  runtime.sequence = 0;
+  runtime.lastCaptureAt = 0;
+  runtime.lastFrameAt = 0;
 }
 
 function createVideoSurface() {
@@ -144,7 +112,15 @@ function createVideoSurface() {
   return video;
 }
 
+function cancelFrameWait() {
+  const cancel = runtime.frameWaitCancel;
+  runtime.frameWaitCancel = null;
+  if (cancel) cancel();
+}
+
 function releaseMedia() {
+  cancelFrameWait();
+
   const stream = runtime.stream;
   runtime.stream = null;
   if (stream) {
@@ -230,8 +206,8 @@ async function acquireCamera() {
     video: {
       facingMode: "user",
       width: { ideal: 640 },
-      height: { ideal: 360 },
-      frameRate: { ideal: 24, max: 30 },
+      height: { ideal: 480 },
+      frameRate: { ideal: TARGET_FPS, max: TARGET_FPS },
     },
     audio: false,
   });
@@ -250,145 +226,108 @@ async function createLocalDetector() {
 
   return poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
     modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
-    enableSmoothing: true,
+    enableSmoothing: false,
     modelUrl: modelUrl.href,
   });
 }
 
-function normaliseKeypoints(pose, width, height) {
+function rawLandmarks(pose, video) {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
   if (!pose?.keypoints || width <= 0 || height <= 0) return [];
 
   return pose.keypoints.flatMap((keypoint, index) => {
-    const score = Number(keypoint.score ?? 0);
+    const name = keypoint.name ?? keypointNames[index];
+    const id = landmarkIds[name];
     const x = Number(keypoint.x);
     const y = Number(keypoint.y);
-    if (score < MIN_KEYPOINT_SCORE || !Number.isFinite(x) || !Number.isFinite(y)) {
-      return [];
-    }
+    if (!id || !Number.isFinite(x) || !Number.isFinite(y)) return [];
 
-    const name = keypoint.name ?? keypointNames[index] ?? `keypoint_${index}`;
+    const rawConfidence = Number(keypoint.score ?? 0);
     return [{
-      name,
-      score,
+      id,
       x: clamp(x / width),
       y: clamp(y / height),
-      weight: bodyWeights[name] ?? 0.5,
+      confidence: Number.isFinite(rawConfidence) ? clamp(rawConfidence) : 0,
     }];
   });
 }
 
-function decayedSample(timestampMs) {
-  const previous = runtime.lastSample;
-  const sample = {
-    x: previous.x,
-    y: previous.y,
-    vx: previous.vx * 0.68,
-    vy: previous.vy * 0.68,
-    energy: previous.energy * 0.72,
-    confidence: 0,
-    timestampMs,
+function framePacket(pose, video, capturedAtMs, completedAtMs) {
+  runtime.sequence += 1;
+  runtime.lastFrameAt = completedAtMs;
+  return {
+    version: 1,
+    sequence: runtime.sequence,
+    capturedAtMs,
+    completedAtMs,
+    landmarks: rawLandmarks(pose, video),
   };
-  runtime.lastSample = sample;
-  if (timestampMs - runtime.previousTimestamp > 300) {
-    runtime.previousPoints.clear();
-    runtime.previousTimestamp = 0;
-  }
-  return sample;
 }
 
-function motionSample(pose, video, timestampMs) {
-  const points = normaliseKeypoints(pose, video.videoWidth, video.videoHeight);
-  if (points.length < MIN_KEYPOINTS) return decayedSample(timestampMs);
-
-  const elapsedMs = timestampMs - runtime.previousTimestamp;
-  const canMeasureVelocity =
-    runtime.previousTimestamp > 0 && elapsedMs >= 8 && elapsedMs <= 300;
-  const frameScale = canMeasureVelocity
-    ? NOMINAL_FRAME_MS / Math.max(elapsedMs, 8)
-    : 0;
-
-  let positionWeight = 0;
-  let positionX = 0;
-  let positionY = 0;
-  let velocityWeight = 0;
-  let velocityX = 0;
-  let velocityY = 0;
-  let movement = 0;
-  let confidenceWeight = 0;
-  let confidence = 0;
-  const nextPoints = new Map();
-
-  for (const point of points) {
-    nextPoints.set(point.name, point);
-    const baseWeight = point.weight * point.score;
-    const previous = runtime.previousPoints.get(point.name);
-    const vx = previous && canMeasureVelocity
-      ? (point.x - previous.x) * frameScale
-      : 0;
-    const vy = previous && canMeasureVelocity
-      ? (point.y - previous.y) * frameScale
-      : 0;
-    const speed = Math.hypot(vx, vy);
-    const activeWeight = baseWeight * (0.22 + Math.min(speed * 18, 1.8));
-
-    positionX += point.x * activeWeight;
-    positionY += point.y * activeWeight;
-    positionWeight += activeWeight;
-    velocityX += vx * activeWeight;
-    velocityY += vy * activeWeight;
-    velocityWeight += activeWeight;
-    movement += speed * baseWeight;
-    confidence += point.score * point.weight;
-    confidenceWeight += point.weight;
-  }
-
-  runtime.previousPoints = nextPoints;
-  runtime.previousTimestamp = timestampMs;
-
-  const targetX = positionWeight > 0 ? positionX / positionWeight : 0.5;
-  const targetY = positionWeight > 0 ? positionY / positionWeight : 0.5;
-  const targetVx = velocityWeight > 0 ? velocityX / velocityWeight : 0;
-  const targetVy = velocityWeight > 0 ? velocityY / velocityWeight : 0;
-  const meanMovement = confidenceWeight > 0 ? movement / confidenceWeight : 0;
-  const targetEnergy = clamp(
-    meanMovement * 11 + Math.hypot(targetVx, targetVy) * 3.5,
-  );
-  const previous = runtime.lastSample;
-  const energyResponse = targetEnergy > previous.energy ? 0.42 : 0.14;
-
-  const sample = {
-    x: clamp(mix(previous.x, targetX, 0.48)),
-    y: clamp(mix(previous.y, targetY, 0.48)),
-    vx: clamp(mix(previous.vx, targetVx, 0.38), -1, 1),
-    vy: clamp(mix(previous.vy, targetVy, 0.38), -1, 1),
-    energy: clamp(mix(previous.energy, targetEnergy, energyResponse)),
-    confidence: clamp(confidenceWeight > 0 ? confidence / confidenceWeight : 0),
-    timestampMs,
-  };
-  runtime.lastSample = sample;
-  return sample;
-}
-
-function emitSample(sample) {
+function emitFrame(packet) {
   const callback = runtime.callback;
   if (typeof callback !== "function") return;
   try {
-    callback(
-      sample.x,
-      sample.y,
-      sample.vx,
-      sample.vy,
-      sample.energy,
-      sample.confidence,
-      sample.timestampMs,
-    );
+    callback(packet);
   } catch (error) {
-    console.error("Kinetic Field MoveNet callback failed", error);
+    console.error("Kinetic Field MoveNet frame callback failed", error);
   }
 }
 
-function delay(milliseconds) {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+function waitForVideoFrame(generation) {
+  const video = runtime.video;
+  if (!video || generation !== runtime.generation) return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let frameCallbackId = null;
+    let timerId = null;
+
+    const finish = (capturedAtMs) => {
+      if (settled) return;
+      settled = true;
+      if (timerId !== null) window.clearTimeout(timerId);
+      if (
+        frameCallbackId !== null &&
+        typeof video.cancelVideoFrameCallback === "function"
+      ) {
+        try {
+          video.cancelVideoFrameCallback(frameCallbackId);
+        } catch (error) {
+          console.error("Kinetic Field video-frame cleanup failed", error);
+        }
+      }
+      if (runtime.frameWaitCancel === cancel) runtime.frameWaitCancel = null;
+      resolve(capturedAtMs);
+    };
+    const cancel = () => finish(null);
+    runtime.frameWaitCancel = cancel;
+
+    if (typeof video.requestVideoFrameCallback === "function") {
+      try {
+        frameCallbackId = video.requestVideoFrameCallback((now, metadata) => {
+          frameCallbackId = null;
+          const presentationTime = Number(metadata?.presentationTime);
+          finish(Number.isFinite(presentationTime) ? presentationTime : now);
+        });
+        timerId = window.setTimeout(
+          () => finish(performance.now()),
+          FRAME_INTERVAL_MS * 2,
+        );
+      } catch {
+        timerId = window.setTimeout(
+          () => finish(performance.now()),
+          FRAME_INTERVAL_MS,
+        );
+      }
+    } else {
+      timerId = window.setTimeout(
+        () => finish(performance.now()),
+        FRAME_INTERVAL_MS,
+      );
+    }
+  });
 }
 
 async function inferenceLoop(generation) {
@@ -398,31 +337,44 @@ async function inferenceLoop(generation) {
       break;
     }
 
-    const startedAt = performance.now();
+    const capturedAtMs = await waitForVideoFrame(generation);
+    if (
+      capturedAtMs === null ||
+      generation !== runtime.generation ||
+      runtime.state !== "running"
+    ) {
+      break;
+    }
+
+    if (capturedAtMs - runtime.lastCaptureAt < FRAME_INTERVAL_MS * 0.9) {
+      continue;
+    }
+    runtime.lastCaptureAt = capturedAtMs;
+
     try {
       if (runtime.video?.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
         const poses = await runtime.detector.estimatePoses(
           runtime.video,
           { maxPoses: 1 },
-          startedAt,
+          capturedAtMs,
         );
         if (generation !== runtime.generation || runtime.state !== "running") break;
-        emitSample(motionSample(poses[0], runtime.video, performance.now()));
+        const completedAtMs = performance.now();
+        emitFrame(
+          framePacket(poses[0], runtime.video, capturedAtMs, completedAtMs),
+        );
       }
     } catch (error) {
       failRuntime(error, generation);
       break;
     }
-
-    const elapsed = performance.now() - startedAt;
-    await delay(Math.max(0, INFERENCE_INTERVAL_MS - elapsed));
   }
 }
 
-async function startInternal(onPose, onError, generation) {
+async function startInternal(onFrame, onError, generation) {
   transition("starting");
-  resetTracking();
-  runtime.callback = onPose;
+  resetFrameState();
+  runtime.callback = onFrame;
   runtime.errorCallback = onError;
 
   try {
@@ -467,26 +419,26 @@ async function startInternal(onPose, onError, generation) {
   }
 }
 
-function start(onPose, onError) {
-  if (typeof onPose !== "function") {
-    return Promise.reject(new TypeError("MoveNet start requires a pose callback."));
+function start(onFrame, onError) {
+  if (typeof onFrame !== "function") {
+    return Promise.reject(new TypeError("MoveNet start requires a frame callback."));
   }
   if (onError != null && typeof onError !== "function") {
     return Promise.reject(new TypeError("MoveNet onError must be a function."));
   }
   const errorCallback = typeof onError === "function" ? onError : null;
   if (runtime.state === "running") {
-    runtime.callback = onPose;
+    runtime.callback = onFrame;
     runtime.errorCallback = errorCallback;
     return Promise.resolve();
   }
   if (runtime.startPromise) {
-    runtime.callback = onPose;
+    runtime.callback = onFrame;
     runtime.errorCallback = errorCallback;
     return runtime.startPromise;
   }
   if (runtime.stopPromise) {
-    return runtime.stopPromise.then(() => start(onPose, errorCallback));
+    return runtime.stopPromise.then(() => start(onFrame, errorCallback));
   }
 
   const begin = async () => {
@@ -496,11 +448,11 @@ function start(onPose, onError) {
       releaseMedia();
       clearCallbacks();
       runtime.backend = null;
-      resetTracking();
+      resetFrameState();
     }
     const generation = runtime.generation + 1;
     runtime.generation = generation;
-    await startInternal(onPose, errorCallback, generation);
+    await startInternal(onFrame, errorCallback, generation);
   };
 
   runtime.startPromise = begin().finally(() => {
@@ -529,7 +481,7 @@ function stop() {
     disposeDetector();
     clearCallbacks();
     runtime.backend = null;
-    resetTracking();
+    resetFrameState();
     transition("idle");
   })().finally(() => {
     runtime.stopPromise = null;

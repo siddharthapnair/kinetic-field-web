@@ -1,27 +1,6 @@
 import 'dart:async';
 
-/// A normalised motion observation produced by a webcam pose model.
-///
-/// Coordinates use the field's top-left origin and remain within `0...1`.
-class PoseObservation {
-  const PoseObservation({
-    required this.x,
-    required this.y,
-    required this.vx,
-    required this.vy,
-    required this.energy,
-    required this.timestamp,
-    this.confidence = 1,
-  });
-
-  final double x;
-  final double y;
-  final double vx;
-  final double vy;
-  final double energy;
-  final double confidence;
-  final Duration timestamp;
-}
+import 'package:kinetic_field/kinetic_field.dart';
 
 enum PoseSourceFailure { denied, unavailable, failed }
 
@@ -36,7 +15,7 @@ class PoseSourceException implements Exception {
 }
 
 abstract interface class PoseSource {
-  Stream<PoseObservation> get observations;
+  Stream<KineticInputFrame> get observations;
 
   Future<void> start();
 
@@ -48,7 +27,7 @@ abstract interface class PoseSource {
 typedef PoseSourceFactory = PoseSource Function();
 typedef StartPoseBridge =
     Future<void> Function(
-      void Function(PoseObservation observation) emit,
+      void Function(KineticInputFrame frame) emit,
       void Function(PoseSourceException error) fail,
     );
 typedef StopPoseBridge = Future<void> Function();
@@ -57,14 +36,14 @@ typedef StopPoseBridge = Future<void> Function();
 ///
 /// The web MoveNet integration only needs to supply [startBridge] and
 /// [stopBridge]. Camera frames and model tensors stay outside Flutter and only
-/// normalised observations cross this boundary.
+/// raw, versioned landmark frames cross this boundary.
 class BridgePoseSource implements PoseSource {
   BridgePoseSource(this._startBridge, this._stopBridge);
 
   final StartPoseBridge _startBridge;
   final StopPoseBridge _stopBridge;
-  final StreamController<PoseObservation> _observations =
-      StreamController<PoseObservation>.broadcast(sync: true);
+  final StreamController<KineticInputFrame> _observations =
+      StreamController<KineticInputFrame>.broadcast(sync: true);
 
   bool _isActive = false;
   bool _isDisposed = false;
@@ -73,7 +52,7 @@ class BridgePoseSource implements PoseSource {
   int _operation = 0;
 
   @override
-  Stream<PoseObservation> get observations => _observations.stream;
+  Stream<KineticInputFrame> get observations => _observations.stream;
 
   @override
   Future<void> start() {
@@ -104,9 +83,9 @@ class BridgePoseSource implements PoseSource {
   Future<void> _performStart(int operation) async {
     PoseSourceException? bridgeFailure;
     await _startBridge(
-      (observation) {
+      (frame) {
         if (!_isDisposed && operation == _operation && _isActive) {
-          _observations.add(observation);
+          _observations.add(frame);
         }
       },
       (error) {
@@ -198,7 +177,7 @@ class UnavailablePoseSource implements PoseSource {
   final String message;
 
   @override
-  Stream<PoseObservation> get observations => const Stream.empty();
+  Stream<KineticInputFrame> get observations => const Stream.empty();
 
   @override
   Future<void> start() => Future<void>.error(

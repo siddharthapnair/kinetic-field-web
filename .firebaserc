@@ -1,10 +1,19 @@
 {
-  "projects": {},
+  "projects": {
+    "default": "kinetic-field-play"
+  },
   "targets": {
     "cortexz": {
       "hosting": {
         "kinetic-field-flutter": [
           "cortexz-kinetic-field"
+        ]
+      }
+    },
+    "kinetic-field-play": {
+      "hosting": {
+        "kinetic-field": [
+          "kinetic-field-play"
         ]
       }
     }

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node test_movenet_contract.mjs",
+    "test": "node test_movenet_contract.mjs && node --test test_soundscape_contract.mjs",
     "vendor:movenet": "node vendor_movenet.mjs"
   },
   "dependencies": {

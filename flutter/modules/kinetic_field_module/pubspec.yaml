@@ -16,7 +16,7 @@ publish_to: 'none'
 # This version is used _only_ for the Runner app, which is used if you just do
 # a `flutter run`. It has no impact on any other native host app that you embed
 # your Flutter project into.
-version: 1.0.0+1
+version: 0.2.0+2
 
 environment:
   sdk: ^3.12.2
@@ -26,10 +26,6 @@ dependencies:
     sdk: flutter
   kinetic_field:
     path: ../../packages/kinetic_field
-
-  # The following adds the Cupertino Icons font to your application.
-  # Use with the CupertinoIcons class for iOS style icons.
-  cupertino_icons: ^1.0.8
 
 dev_dependencies:
   flutter_test:

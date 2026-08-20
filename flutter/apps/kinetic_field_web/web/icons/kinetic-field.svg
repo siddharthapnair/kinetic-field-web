@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Kinetic Field</title>
+  <desc id="desc">A luminous bloom surrounded by moving particles.</desc>
+  <defs>
+    <radialGradient id="background" cx="50%" cy="42%" r="76%">
+      <stop offset="0" stop-color="#173646"/>
+      <stop offset="0.48" stop-color="#09151d"/>
+      <stop offset="1" stop-color="#04070c"/>
+    </radialGradient>
+    <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#8bf6ef" stop-opacity="0.52"/>
+      <stop offset="0.5" stop-color="#56d9ea" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#56d9ea" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="orbit" x1="90" y1="78" x2="430" y2="428" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#73f4ed"/>
+      <stop offset="0.48" stop-color="#b6ff7d"/>
+      <stop offset="1" stop-color="#ff6eb6"/>
+    </linearGradient>
+    <linearGradient id="petal" x1="204" y1="184" x2="310" y2="328" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#a7fff4"/>
+      <stop offset="0.44" stop-color="#77dff1"/>
+      <stop offset="1" stop-color="#ff78bd"/>
+    </linearGradient>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" fill="url(#background)"/>
+  <circle cx="256" cy="256" r="170" fill="url(#halo)"/>
+  <g fill="none" stroke-linecap="round">
+    <path d="M98 273c18-112 106-180 206-163 79 14 129 72 139 137" stroke="url(#orbit)" stroke-width="8" stroke-dasharray="2 30" opacity="0.94"/>
+    <path d="M416 317c-39 76-124 113-204 88-64-20-108-72-119-132" stroke="url(#orbit)" stroke-width="5" stroke-dasharray="2 25" opacity="0.68"/>
+    <path d="M143 173c61-52 150-56 215-11" stroke="#82ebef" stroke-width="5" stroke-dasharray="1 23" opacity="0.62"/>
+  </g>
+  <g filter="url(#glow)">
+    <ellipse cx="256" cy="196" rx="34" ry="68" fill="url(#petal)"/>
+    <ellipse cx="316" cy="256" rx="68" ry="34" fill="url(#petal)" transform="rotate(8 316 256)"/>
+    <ellipse cx="256" cy="316" rx="34" ry="68" fill="url(#petal)" transform="rotate(14 256 316)"/>
+    <ellipse cx="196" cy="256" rx="68" ry="34" fill="url(#petal)" transform="rotate(-8 196 256)"/>
+    <circle cx="256" cy="256" r="30" fill="#f8fff0"/>
+    <circle cx="256" cy="256" r="13" fill="#dfff7d"/>
+  </g>
+  <g fill="#f5fff7">
+    <circle cx="105" cy="269" r="7"/>
+    <circle cx="153" cy="135" r="5"/>
+    <circle cx="351" cy="126" r="8"/>
+    <circle cx="438" cy="249" r="6"/>
+    <circle cx="397" cy="373" r="9"/>
+    <circle cx="200" cy="414" r="6"/>
+  </g>
+  <g fill="#ff78bd">
+    <circle cx="116" cy="327" r="5"/>
+    <circle cx="417" cy="197" r="4"/>
+  </g>
+</svg>

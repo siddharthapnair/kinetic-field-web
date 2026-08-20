@@ -5,7 +5,11 @@ import 'package:flutter/services.dart';
 import 'package:kinetic_field/kinetic_field.dart';
 
 import 'fullscreen_controller.dart';
+import 'play_world.dart';
 import 'pose_source.dart';
+import 'soundscape_controller.dart';
+import 'soundscape_platform.dart';
+import 'world_selector.dart';
 
 const _ink950 = Color(0xFF050810);
 const _ink900 = Color(0xFF101722);
@@ -31,6 +35,7 @@ class KineticFieldApp extends StatelessWidget {
     required this.poseSourceFactory,
     this.controller,
     this.fullscreenController,
+    this.soundscapeController,
     this.onPresentationModeChanged,
     super.key,
   });
@@ -38,6 +43,7 @@ class KineticFieldApp extends StatelessWidget {
   final PoseSourceFactory poseSourceFactory;
   final KineticFieldController? controller;
   final FullscreenController? fullscreenController;
+  final SoundscapeController? soundscapeController;
   final PresentationModeCallback? onPresentationModeChanged;
 
   @override
@@ -50,6 +56,7 @@ class KineticFieldApp extends StatelessWidget {
         poseSourceFactory: poseSourceFactory,
         controller: controller,
         fullscreenController: fullscreenController,
+        soundscapeController: soundscapeController,
         onPresentationModeChanged: onPresentationModeChanged,
       ),
     );
@@ -61,6 +68,7 @@ class KineticFieldExperience extends StatefulWidget {
     required this.poseSourceFactory,
     this.controller,
     this.fullscreenController,
+    this.soundscapeController,
     this.onPresentationModeChanged,
     super.key,
   });
@@ -68,6 +76,7 @@ class KineticFieldExperience extends StatefulWidget {
   final PoseSourceFactory poseSourceFactory;
   final KineticFieldController? controller;
   final FullscreenController? fullscreenController;
+  final SoundscapeController? soundscapeController;
   final PresentationModeCallback? onPresentationModeChanged;
 
   @override
@@ -78,8 +87,10 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
   late final PoseSource _poseSource;
   late final KineticFieldController _controller;
   late final bool _ownsController;
-  late final StreamSubscription<PoseObservation> _poseSubscription;
+  late final StreamSubscription<KineticInputFrame> _poseSubscription;
   late final FullscreenController _fullscreenController;
+  late final SoundscapeController _soundscapeController;
+  late final bool _ownsSoundscapeController;
   late final StreamSubscription<bool> _fullscreenSubscription;
 
   CameraLifecycleState _cameraState = CameraLifecycleState.idle;
@@ -88,10 +99,13 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
   int _cameraOperation = 0;
   bool _introVisible = true;
   bool _settingsOpen = false;
+  bool _worldsOpen = false;
   bool _interfaceVisible = true;
   bool _presentationMode = false;
   bool _mirrorCamera = true;
   bool _reducedMotionApplied = false;
+  bool _soundEnabled = false;
+  bool _soundBusy = false;
 
   bool get _cameraActive => _cameraState == CameraLifecycleState.active;
   KineticFieldSettings get _settings => _controller.settings;
@@ -102,6 +116,10 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
     _poseSource = widget.poseSourceFactory();
     _ownsController = widget.controller == null;
     _controller = widget.controller ?? KineticFieldController();
+    _ownsSoundscapeController = widget.soundscapeController == null;
+    _soundscapeController =
+        widget.soundscapeController ?? createPlatformSoundscapeController();
+    _controller.addListener(_syncSoundscape);
     _fullscreenController =
         widget.fullscreenController ?? const UnsupportedFullscreenController();
     _poseSubscription = _poseSource.observations.listen(
@@ -133,8 +151,75 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
     unawaited(_poseSource.dispose());
     unawaited(_fullscreenSubscription.cancel());
     unawaited(_releaseFullscreen());
+    _controller.removeListener(_syncSoundscape);
+    unawaited(_soundscapeController.disable());
+    if (_ownsSoundscapeController) {
+      unawaited(_soundscapeController.dispose());
+    }
     if (_ownsController) _controller.dispose();
     super.dispose();
+  }
+
+  void _syncSoundscape() {
+    if (!_soundEnabled) return;
+    if (!_soundscapeController.isEnabled) {
+      _soundEnabled = false;
+      if (mounted) setState(() {});
+      return;
+    }
+    final motion = _controller.motionState;
+    final left = motion.left.isVisible ? motion.left : null;
+    final right = motion.right.isVisible ? motion.right : null;
+    _soundscapeController.update(
+      sceneId: sceneSoundscapeId(_settings.scene),
+      energy: motion.energy,
+      handCount: motion.visibleEffectorCount,
+      leftX: left?.x,
+      leftY: left?.y,
+      rightX: right?.x,
+      rightY: right?.y,
+      calm: _settings.calm,
+    );
+  }
+
+  Future<void> _toggleSound() async {
+    if (_soundBusy || !_soundscapeController.isSupported) return;
+    setState(() => _soundBusy = true);
+    final enabled = _soundscapeController.isEnabled
+        ? !(await _soundscapeController.disable())
+        : await _soundscapeController.enable();
+    if (!mounted) return;
+    setState(() {
+      _soundEnabled = enabled;
+      _soundBusy = false;
+    });
+    _syncSoundscape();
+  }
+
+  void _setSoundVolume(double value) {
+    _soundscapeController.setVolume(value);
+    setState(() {});
+  }
+
+  void _selectScene(KineticScene scene) {
+    if (scene != _settings.scene) {
+      _setSettings(_settings.copyWith(scene: scene));
+    }
+    setState(() {
+      _worldsOpen = false;
+      _interfaceVisible = true;
+    });
+    _scheduleHide();
+  }
+
+  void _toggleWorlds() {
+    _hideTimer?.cancel();
+    setState(() {
+      _worldsOpen = !_worldsOpen;
+      _settingsOpen = false;
+      _interfaceVisible = true;
+    });
+    if (!_worldsOpen) _scheduleHide();
   }
 
   Future<void> _releaseFullscreen() async {
@@ -144,17 +229,25 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
     await _fullscreenController.dispose();
   }
 
-  void _applyPose(PoseObservation pose) {
+  void _applyPose(KineticInputFrame frame) {
     if (!_cameraActive) return;
-    _controller.updateMotion(
-      MotionSample(
-        x: _mirrorCamera ? 1 - pose.x : pose.x,
-        y: pose.y,
-        vx: _mirrorCamera ? -pose.vx : pose.vx,
-        vy: pose.vy,
-        energy: pose.energy,
-        confidence: pose.confidence,
-        timestamp: pose.timestamp,
+    _controller.ingestFrame(
+      KineticInputFrame(
+        version: frame.version,
+        sequence: frame.sequence,
+        capturedAt: frame.capturedAt,
+        receivedAt: frame.receivedAt,
+        kind: frame.kind,
+        landmarks: frame.landmarks
+            .map(
+              (landmark) => KineticLandmarkObservation(
+                id: landmark.id,
+                x: _mirrorCamera ? 1 - landmark.x : landmark.x,
+                y: landmark.y,
+                confidence: landmark.confidence,
+              ),
+            )
+            .toList(growable: false),
       ),
     );
   }
@@ -242,9 +335,9 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
 
   void _scheduleHide() {
     _hideTimer?.cancel();
-    if (!_cameraActive || _introVisible || _settingsOpen) return;
+    if (!_cameraActive || _introVisible || _settingsOpen || _worldsOpen) return;
     _hideTimer = Timer(const Duration(milliseconds: 4200), () {
-      if (mounted && !_introVisible && !_settingsOpen) {
+      if (mounted && !_introVisible && !_settingsOpen && !_worldsOpen) {
         setState(() => _interfaceVisible = false);
       }
     });
@@ -257,16 +350,26 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
 
   void _reset() {
     _controller.updateSettings(
-      KineticFieldSettings(calm: MediaQuery.disableAnimationsOf(context)),
+      KineticFieldSettings(
+        scene: _settings.scene,
+        calm: MediaQuery.disableAnimationsOf(context),
+      ),
     );
     _controller.resetMotion();
     setState(() => _mirrorCamera = true);
+  }
+
+  void _setMirrorCamera(bool value) {
+    if (value == _mirrorCamera) return;
+    _controller.resetMotion();
+    setState(() => _mirrorCamera = value);
   }
 
   void _toggleSettings() {
     _hideTimer?.cancel();
     setState(() {
       _settingsOpen = !_settingsOpen;
+      _worldsOpen = false;
       _interfaceVisible = true;
     });
     if (!_settingsOpen) _scheduleHide();
@@ -284,6 +387,7 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
       if (enabled) {
         _introVisible = false;
         _settingsOpen = false;
+        _worldsOpen = false;
       }
       _interfaceVisible = !enabled;
     });
@@ -299,6 +403,7 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
     setState(() {
       _introVisible = false;
       _settingsOpen = false;
+      _worldsOpen = false;
       _interfaceVisible = true;
     });
     _scheduleHide();
@@ -307,7 +412,7 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
   String get _cameraMessage => switch (_cameraState) {
     CameraLifecycleState.idle => 'Pointer motion active',
     CameraLifecycleState.requesting => 'Waiting for camera permission',
-    CameraLifecycleState.active => 'Camera pose active',
+    CameraLifecycleState.active => 'Two-hand camera active',
     CameraLifecycleState.denied =>
       'Camera access was declined. Pointer mode remains active.',
     CameraLifecycleState.unavailable =>
@@ -325,6 +430,14 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
         const SingleActivator(LogicalKeyboardKey.keyF): () =>
             unawaited(_togglePresentation()),
         const SingleActivator(LogicalKeyboardKey.keyR): _reset,
+        const SingleActivator(LogicalKeyboardKey.digit1): () =>
+            _selectScene(KineticScene.bloom),
+        const SingleActivator(LogicalKeyboardKey.digit2): () =>
+            _selectScene(KineticScene.honeybees),
+        const SingleActivator(LogicalKeyboardKey.digit3): () =>
+            _selectScene(KineticScene.fireflies),
+        const SingleActivator(LogicalKeyboardKey.digit4): () =>
+            _selectScene(KineticScene.moonPond),
         const SingleActivator(LogicalKeyboardKey.escape): _dismissUi,
       },
       child: Focus(
@@ -358,15 +471,25 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
                         cameraMessage: _cameraMessage,
                         introVisible: _introVisible,
                         interfaceVisible:
-                            _interfaceVisible || _introVisible || _settingsOpen,
+                            _interfaceVisible ||
+                            _introVisible ||
+                            _settingsOpen ||
+                            _worldsOpen,
                         settingsOpen: _settingsOpen,
+                        worldsOpen: _worldsOpen,
                         presentationMode: _presentationMode,
                         settings: _settings,
                         stats: _stats,
                         mirrorCamera: _mirrorCamera,
+                        soundSupported: _soundscapeController.isSupported,
+                        soundEnabled:
+                            _soundEnabled && _soundscapeController.isEnabled,
+                        soundBusy: _soundBusy,
+                        soundVolume: _soundscapeController.volume,
                         reduceMotion: reduceMotion,
                         onWordmark: () => setState(() {
                           _introVisible = true;
+                          _worldsOpen = false;
                           _interfaceVisible = true;
                         }),
                         onStartCamera: _startCamera,
@@ -376,12 +499,15 @@ class _KineticFieldExperienceState extends State<KineticFieldExperience> {
                         }),
                         onToggleCamera: _toggleCamera,
                         onToggleSettings: _toggleSettings,
+                        onToggleWorlds: _toggleWorlds,
+                        onSceneSelected: _selectScene,
+                        onToggleSound: () => unawaited(_toggleSound()),
+                        onSoundVolumeChanged: _setSoundVolume,
                         onTogglePresentation: () =>
                             unawaited(_togglePresentation()),
                         onCloseSettings: _toggleSettings,
                         onSettingsChanged: _setSettings,
-                        onMirrorChanged: (value) =>
-                            setState(() => _mirrorCamera = value),
+                        onMirrorChanged: _setMirrorCamera,
                         onReset: _reset,
                       ),
                     ),
@@ -404,16 +530,25 @@ class _Interface extends StatelessWidget {
     required this.introVisible,
     required this.interfaceVisible,
     required this.settingsOpen,
+    required this.worldsOpen,
     required this.presentationMode,
     required this.settings,
     required this.stats,
     required this.mirrorCamera,
+    required this.soundSupported,
+    required this.soundEnabled,
+    required this.soundBusy,
+    required this.soundVolume,
     required this.reduceMotion,
     required this.onWordmark,
     required this.onStartCamera,
     required this.onPointerMode,
     required this.onToggleCamera,
     required this.onToggleSettings,
+    required this.onToggleWorlds,
+    required this.onSceneSelected,
+    required this.onToggleSound,
+    required this.onSoundVolumeChanged,
     required this.onTogglePresentation,
     required this.onCloseSettings,
     required this.onSettingsChanged,
@@ -427,16 +562,25 @@ class _Interface extends StatelessWidget {
   final bool introVisible;
   final bool interfaceVisible;
   final bool settingsOpen;
+  final bool worldsOpen;
   final bool presentationMode;
   final KineticFieldSettings settings;
   final KineticFieldStats stats;
   final bool mirrorCamera;
+  final bool soundSupported;
+  final bool soundEnabled;
+  final bool soundBusy;
+  final double soundVolume;
   final bool reduceMotion;
   final VoidCallback onWordmark;
   final Future<void> Function() onStartCamera;
   final VoidCallback onPointerMode;
   final VoidCallback onToggleCamera;
   final VoidCallback onToggleSettings;
+  final VoidCallback onToggleWorlds;
+  final ValueChanged<KineticScene> onSceneSelected;
+  final VoidCallback onToggleSound;
+  final ValueChanged<double> onSoundVolumeChanged;
   final VoidCallback onTogglePresentation;
   final VoidCallback onCloseSettings;
   final ValueChanged<KineticFieldSettings> onSettingsChanged;
@@ -546,10 +690,77 @@ class _Interface extends StatelessWidget {
             cameraState: cameraState,
             cameraMessage: cameraMessage,
             duration: duration,
+            selectedScene: settings.scene,
             onStartCamera: onStartCamera,
             onPointerMode: onPointerMode,
+            onSceneSelected: onSceneSelected,
           ),
         ),
+        if (!introVisible && interfaceVisible)
+          Positioned(
+            top: short ? 52 : 62,
+            left: 16,
+            right: 16,
+            child: IgnorePointer(
+              child: Center(
+                child: Semantics(
+                  liveRegion: true,
+                  label: playWorldFor(settings.scene).prompt,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: _ink900.withValues(alpha: 0.76),
+                      borderRadius: BorderRadius.circular(99),
+                      border: Border.all(
+                        color: playWorldFor(
+                          settings.scene,
+                        ).accent.withValues(alpha: 0.28),
+                      ),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
+                      child: Text(
+                        playWorldFor(settings.scene).prompt,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: _paper,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        if (worldsOpen)
+          Positioned(
+            left: compact ? 0 : 28,
+            right: compact ? 0 : 28,
+            bottom: 66,
+            child: Center(
+              child: Material(
+                color: _ink900,
+                elevation: 18,
+                shadowColor: _ink950,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                  side: BorderSide(color: _dim.withValues(alpha: 0.34)),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: WorldSelector(
+                    selected: settings.scene,
+                    compact: compact,
+                    onSelected: onSceneSelected,
+                  ),
+                ),
+              ),
+            ),
+          ),
         Positioned(
           bottom: 0,
           left: 0,
@@ -563,7 +774,14 @@ class _Interface extends StatelessWidget {
                 cameraState: cameraState,
                 settingsOpen: settingsOpen,
                 presentationMode: presentationMode,
+                selectedScene: settings.scene,
+                worldsOpen: worldsOpen,
+                soundSupported: soundSupported,
+                soundEnabled: soundEnabled,
+                soundBusy: soundBusy,
                 onCamera: onToggleCamera,
+                onWorlds: onToggleWorlds,
+                onSound: onToggleSound,
                 onSettings: onToggleSettings,
                 onPresentation: onTogglePresentation,
               ),
@@ -577,9 +795,14 @@ class _Interface extends StatelessWidget {
               settings: settings,
               stats: stats,
               mirrorCamera: mirrorCamera,
+              soundSupported: soundSupported,
+              soundEnabled: soundEnabled,
+              soundVolume: soundVolume,
               onClose: onCloseSettings,
               onChanged: onSettingsChanged,
               onMirrorChanged: onMirrorChanged,
+              onToggleSound: onToggleSound,
+              onSoundVolumeChanged: onSoundVolumeChanged,
               onReset: onReset,
             ),
           ),
@@ -596,8 +819,10 @@ class _Intro extends StatelessWidget {
     required this.cameraState,
     required this.cameraMessage,
     required this.duration,
+    required this.selectedScene,
     required this.onStartCamera,
     required this.onPointerMode,
+    required this.onSceneSelected,
   });
 
   final bool visible;
@@ -606,8 +831,10 @@ class _Intro extends StatelessWidget {
   final CameraLifecycleState cameraState;
   final String cameraMessage;
   final Duration duration;
+  final KineticScene selectedScene;
   final Future<void> Function() onStartCamera;
   final VoidCallback onPointerMode;
+  final ValueChanged<KineticScene> onSceneSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -633,7 +860,7 @@ class _Intro extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
                   const Text(
-                    'YOUR MOVEMENT BECOMES FORCE',
+                    'FOUR WORLDS · TWO HANDS · ENDLESS PLAY',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: _cyan,
@@ -644,7 +871,7 @@ class _Intro extends StatelessWidget {
                   ),
                   SizedBox(height: short ? 8 : 16),
                   Text(
-                    'Shape motion\ninto light.',
+                    'Your hands\nmake worlds move.',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       color: _paper,
@@ -658,8 +885,8 @@ class _Intro extends StatelessWidget {
                   ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 650),
                     child: const Text(
-                      'A living particle field follows the movement seen by your '
-                      'laptop camera. Frames stay on this device and are never uploaded.',
+                      'Choose a world, then move gently or move wildly. Your laptop '
+                      'camera sees only the motion it needs; frames stay on this device.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: _muted,
@@ -668,7 +895,14 @@ class _Intro extends StatelessWidget {
                       ),
                     ),
                   ),
-                  SizedBox(height: short ? 14 : 24),
+                  SizedBox(height: short ? 12 : 20),
+                  WorldSelector(
+                    selected: selectedScene,
+                    compact: compact,
+                    showDescriptions: !short,
+                    onSelected: onSceneSelected,
+                  ),
+                  SizedBox(height: short ? 12 : 20),
                   Wrap(
                     alignment: WrapAlignment.center,
                     spacing: 10,
@@ -689,7 +923,7 @@ class _Intro extends StatelessWidget {
                         label: Text(
                           cameraState == CameraLifecycleState.requesting
                               ? 'Connecting camera'
-                              : 'Enable camera',
+                              : 'Play with camera',
                         ),
                       ),
                       OutlinedButton.icon(
@@ -701,7 +935,7 @@ class _Intro extends StatelessWidget {
                           shape: const StadiumBorder(),
                         ),
                         icon: const Icon(Icons.mouse_outlined, size: 18),
-                        label: const Text('Continue with pointer'),
+                        label: const Text('Play with pointer'),
                       ),
                     ],
                   ),
@@ -729,7 +963,14 @@ class _Dock extends StatelessWidget {
     required this.cameraState,
     required this.settingsOpen,
     required this.presentationMode,
+    required this.selectedScene,
+    required this.worldsOpen,
+    required this.soundSupported,
+    required this.soundEnabled,
+    required this.soundBusy,
     required this.onCamera,
+    required this.onWorlds,
+    required this.onSound,
     required this.onSettings,
     required this.onPresentation,
   });
@@ -738,7 +979,14 @@ class _Dock extends StatelessWidget {
   final CameraLifecycleState cameraState;
   final bool settingsOpen;
   final bool presentationMode;
+  final KineticScene selectedScene;
+  final bool worldsOpen;
+  final bool soundSupported;
+  final bool soundEnabled;
+  final bool soundBusy;
   final VoidCallback onCamera;
+  final VoidCallback onWorlds;
+  final VoidCallback onSound;
   final VoidCallback onSettings;
   final VoidCallback onPresentation;
 
@@ -758,6 +1006,32 @@ class _Dock extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
+            Tooltip(
+              message: 'Choose a play world',
+              child: TextButton.icon(
+                onPressed: onWorlds,
+                style: TextButton.styleFrom(
+                  minimumSize: Size(compact ? 46 : 128, 46),
+                  foregroundColor: playWorldFor(selectedScene).accent,
+                  backgroundColor: worldsOpen
+                      ? playWorldFor(
+                          selectedScene,
+                        ).accent.withValues(alpha: 0.12)
+                      : Colors.transparent,
+                  shape: const StadiumBorder(),
+                ),
+                icon: Icon(playWorldFor(selectedScene).icon, size: 19),
+                label: compact
+                    ? const SizedBox.shrink()
+                    : Text(playWorldFor(selectedScene).label),
+              ),
+            ),
+            Container(
+              width: 1,
+              height: 20,
+              margin: const EdgeInsets.symmetric(horizontal: 3),
+              color: _dim.withValues(alpha: 0.3),
+            ),
             Tooltip(
               message: active ? 'Disable camera' : 'Enable camera',
               child: TextButton.icon(
@@ -786,6 +1060,18 @@ class _Dock extends StatelessWidget {
               height: 20,
               margin: const EdgeInsets.symmetric(horizontal: 3),
               color: _dim.withValues(alpha: 0.3),
+            ),
+            _DockButton(
+              tooltip: soundSupported
+                  ? (soundEnabled ? 'Turn sound off' : 'Turn sound on')
+                  : 'Sound is unavailable',
+              selected: soundEnabled,
+              icon: soundBusy
+                  ? Icons.hourglass_top_rounded
+                  : soundEnabled
+                  ? Icons.volume_up_rounded
+                  : Icons.volume_off_rounded,
+              onPressed: soundSupported && !soundBusy ? onSound : null,
             ),
             _DockButton(
               tooltip: 'Field controls',
@@ -821,7 +1107,7 @@ class _DockButton extends StatelessWidget {
   final String tooltip;
   final bool selected;
   final IconData icon;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   @override
   Widget build(BuildContext context) {
@@ -871,18 +1157,28 @@ class _SettingsPanel extends StatelessWidget {
     required this.settings,
     required this.stats,
     required this.mirrorCamera,
+    required this.soundSupported,
+    required this.soundEnabled,
+    required this.soundVolume,
     required this.onClose,
     required this.onChanged,
     required this.onMirrorChanged,
+    required this.onToggleSound,
+    required this.onSoundVolumeChanged,
     required this.onReset,
   });
 
   final KineticFieldSettings settings;
   final KineticFieldStats stats;
   final bool mirrorCamera;
+  final bool soundSupported;
+  final bool soundEnabled;
+  final double soundVolume;
   final VoidCallback onClose;
   final ValueChanged<KineticFieldSettings> onChanged;
   final ValueChanged<bool> onMirrorChanged;
+  final VoidCallback onToggleSound;
+  final ValueChanged<double> onSoundVolumeChanged;
   final VoidCallback onReset;
 
   @override
@@ -980,6 +1276,20 @@ class _SettingsPanel extends StatelessWidget {
                     (v) => onChanged(settings.copyWith(pointSize: v)),
                   ),
                   _Range(
+                    'Depth',
+                    settings.depth,
+                    0,
+                    1.3,
+                    (v) => onChanged(settings.copyWith(depth: v)),
+                  ),
+                  _Range(
+                    'Motion trails',
+                    settings.trails,
+                    0,
+                    1,
+                    (v) => onChanged(settings.copyWith(trails: v)),
+                  ),
+                  _Range(
                     'Colour drift',
                     settings.colourSpeed,
                     0,
@@ -1030,6 +1340,22 @@ class _SettingsPanel extends StatelessWidget {
                     onChanged: (value) =>
                         onChanged(settings.copyWith(calm: value)),
                   ),
+                  _SettingSwitch(
+                    title: 'Soundscape',
+                    subtitle: soundSupported
+                        ? 'Optional procedural tones, generated on this device'
+                        : 'Sound is unavailable in this browser',
+                    value: soundEnabled,
+                    onChanged: soundSupported ? (_) => onToggleSound() : null,
+                  ),
+                  if (soundSupported)
+                    _Range(
+                      'Sound volume',
+                      soundVolume,
+                      0,
+                      0.5,
+                      soundEnabled ? onSoundVolumeChanged : null,
+                    ),
                   const SizedBox(height: 6),
                   const Text(
                     'Camera frames and MoveNet inference remain in this browser.',
@@ -1080,7 +1406,7 @@ class _Range extends StatelessWidget {
   final double value;
   final double min;
   final double max;
-  final ValueChanged<double> onChanged;
+  final ValueChanged<double>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1133,7 +1459,7 @@ class _SettingSwitch extends StatelessWidget {
   final String title;
   final String subtitle;
   final bool value;
-  final ValueChanged<bool> onChanged;
+  final ValueChanged<bool>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1173,13 +1499,16 @@ class _FadeControls extends StatelessWidget {
   Widget build(BuildContext context) {
     return ExcludeSemantics(
       excluding: !visible,
-      child: IgnorePointer(
-        ignoring: !visible,
-        child: AnimatedOpacity(
-          opacity: visible ? 1 : 0,
-          duration: duration,
-          curve: Curves.easeOutCubic,
-          child: child,
+      child: ExcludeFocus(
+        excluding: !visible,
+        child: IgnorePointer(
+          ignoring: !visible,
+          child: AnimatedOpacity(
+            opacity: visible ? 1 : 0,
+            duration: duration,
+            curve: Curves.easeOutCubic,
+            child: child,
+          ),
         ),
       ),
     );

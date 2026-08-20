@@ -12,6 +12,15 @@ enum KineticQuality {
   high,
 }
 
+/// Built-in play worlds. Each scene has its own interaction strategy and
+/// renderer, rather than being a colour preset for the same particle effect.
+enum KineticScene {
+  bloom,
+  honeybees,
+  fireflies,
+  moonPond,
+}
+
 /// A normalised motion observation supplied to [KineticFieldController].
 ///
 /// [x] and [y] use the inclusive `0..1` viewport range. Velocities are measured
@@ -124,8 +133,11 @@ class KineticFieldSettings {
     this.radius = 0.30,
     this.swirl = 1.22,
     this.turbulence = 0.68,
-    this.pointSize = 1.45,
+    this.pointSize = 1.7,
     this.colourSpeed = 0.52,
+    this.depth = 1.0,
+    this.trails = 0.86,
+    this.scene = KineticScene.bloom,
     this.quality = KineticQuality.automatic,
     this.calm = false,
   });
@@ -148,6 +160,15 @@ class KineticFieldSettings {
   /// Rate of autonomous colour drift.
   final double colourSpeed;
 
+  /// Strength of procedural perspective and near/far displacement.
+  final double depth;
+
+  /// Amount of motion echo applied to the reactive particle subset.
+  final double trails;
+
+  /// Active play world and scene-specific interaction strategy.
+  final KineticScene scene;
+
   /// Particle budget preset.
   final KineticQuality quality;
 
@@ -162,6 +183,9 @@ class KineticFieldSettings {
     double? turbulence,
     double? pointSize,
     double? colourSpeed,
+    double? depth,
+    double? trails,
+    KineticScene? scene,
     KineticQuality? quality,
     bool? calm,
   }) {
@@ -172,6 +196,9 @@ class KineticFieldSettings {
       turbulence: turbulence ?? this.turbulence,
       pointSize: pointSize ?? this.pointSize,
       colourSpeed: colourSpeed ?? this.colourSpeed,
+      depth: depth ?? this.depth,
+      trails: trails ?? this.trails,
+      scene: scene ?? this.scene,
       quality: quality ?? this.quality,
       calm: calm ?? this.calm,
     );
@@ -184,8 +211,11 @@ class KineticFieldSettings {
       radius: _finiteOr(radius, 0.30).clamp(0.04, 1.0),
       swirl: _finiteOr(swirl, 1.22).clamp(0.0, 3.0),
       turbulence: _finiteOr(turbulence, 0.68).clamp(0.0, 2.0),
-      pointSize: _finiteOr(pointSize, 1.45).clamp(0.5, 6.0),
+      pointSize: _finiteOr(pointSize, 1.7).clamp(0.5, 6.0),
       colourSpeed: _finiteOr(colourSpeed, 0.52).clamp(0.0, 3.0),
+      depth: _finiteOr(depth, 1.0).clamp(0.0, 1.5),
+      trails: _finiteOr(trails, 0.86).clamp(0.0, 1.0),
+      scene: scene,
       quality: quality,
       calm: calm,
     );
@@ -201,6 +231,9 @@ class KineticFieldSettings {
             turbulence == other.turbulence &&
             pointSize == other.pointSize &&
             colourSpeed == other.colourSpeed &&
+            depth == other.depth &&
+            trails == other.trails &&
+            scene == other.scene &&
             quality == other.quality &&
             calm == other.calm;
   }
@@ -213,6 +246,9 @@ class KineticFieldSettings {
         turbulence,
         pointSize,
         colourSpeed,
+        depth,
+        trails,
+        scene,
         quality,
         calm,
       );
